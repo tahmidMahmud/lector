@@ -29,6 +29,11 @@ logging.basicConfig(level=settings.log_level,
 # httpx logs full request URLs at INFO, which would leak the Kavita API key (?apiKey=...).
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
+# phonemizer warns "words count mismatch" on nearly every TTS chunk; it is harmless noise.
+logging.getLogger("phonemizer").setLevel(logging.ERROR)
+# phonemizer re-creates its logger (level WARNING, NullHandler) on backend init; records would
+# still propagate to the root handler, so cut propagation instead.
+logging.getLogger("phonemizer").propagate = False
 log = logging.getLogger("lector")
 
 

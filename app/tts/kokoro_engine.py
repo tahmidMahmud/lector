@@ -21,6 +21,7 @@ MIN_SPEED, MAX_SPEED = 0.5, 2.0  # kokoro-onnx asserts this range
 
 # phonemizer logs "words count mismatch" for nearly every chunk; it's harmless noise.
 logging.getLogger("phonemizer").setLevel(logging.ERROR)
+logging.getLogger("phonemizer").propagate = False  # it re-inits its level on backend creation
 
 
 class KokoroEngine(TTSEngine):
