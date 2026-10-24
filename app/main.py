@@ -26,6 +26,9 @@ PLACEHOLDER_HTML = """<!doctype html><html><head><meta charset="utf-8"><title>Le
 
 logging.basicConfig(level=settings.log_level,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+# httpx logs full request URLs at INFO, which would leak the Kavita API key (?apiKey=...).
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 log = logging.getLogger("lector")
 
 
