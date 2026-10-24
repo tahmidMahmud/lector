@@ -525,3 +525,7 @@ td .bar { min-width: 80px; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .001ms !important; transition-duration: .001ms !important; scroll-behavior: auto !important; }
 }
+
+/* live narration line on a running rendition */
+.rend-sub.live { color: var(--accent, #8b8cf8); display: flex; align-items: center; gap: .35em; margin-top: .25em; }
+.rend-sub.live svg { width: 1em; height: 1em; }

@@ -323,6 +323,23 @@ function rendChip(r) {
 const isActive = (r) => ['queued', 'running', 'paused'].includes(r.status);
 /** Generation fraction 0..1: detailed responses use `generation_progress`, plain Rendition objects use `progress`. */
 const genProg = (r) => (typeof r?.generation_progress === 'number' ? r.generation_progress : typeof r?.progress === 'number' ? r.progress : 0);
+/** One line describing what the worker is doing on this rendition right now (running only). */
+function liveLine(r) {
+  const l = r && r.live;
+  if (!l || r.status !== 'running') return '';
+  const where = (r.total_chapters || 0) > 1 && l.chapter_title ? `${l.chapter_title} · ` : '';
+  const chunk = l.chunks ? `segment ${l.chunk}/${l.chunks}` : 'starting…';
+  const eta = l.eta_seconds != null ? ` · about ${fmtEta(l.eta_seconds)} left` : '';
+  const rtf = l.realtime_factor ? ` · ${l.realtime_factor}× realtime` : '';
+  return html`<div class="rend-sub live">${icon('headphones')} Narrating ${where}${chunk}${eta}${rtf}</div>`;
+}
+function fmtEta(sec) {
+  if (sec < 60) return 'a minute';
+  const m = Math.round(sec / 60);
+  if (m < 60) return `${m} min`;
+  const h = Math.floor(m / 60);
+  return `${h} h ${m % 60} min`;
+}
 /** The signed-in user's Progress object attached to a detailed rendition (or null). */
 const userProg = (r) => (r && r.progress && typeof r.progress === 'object' ? r.progress : null);
 
@@ -1324,6 +1341,7 @@ async function viewBook(root, ctx, [bookId]) {
           <div style="min-width:0">
             <div class="rend-title">${icon('headphones')} ${r.voice_name || r.voice} <span class="dim">· ${Number(r.speed || 1).toFixed(2)}×</span> ${rendChip(r)}</div>
             <div class="rend-sub">${r.done_chapters ?? 0}/${r.total_chapters ?? chs.length} chapters · ${fmtDur(r.total_duration)}${r.engine ? ` · ${r.engine}` : ''}${pr && pr.percent ? ` · ${Math.round(pr.percent)}% listened` : ''}</div>
+            ${liveLine(r)}
           </div>
           ${playable ? html`<a class="btn primary" href="#/player/${r.id}" aria-label="${resume ? 'Resume' : 'Play'} ${r.voice_name || r.voice} audiobook">${icon('play')} ${resume ? 'Resume' : 'Play'}</a>` : ''}
         </div>
@@ -1830,7 +1848,7 @@ async function viewAdmin(root, ctx) {
         <td class="nowrap">${r.voice_name || r.voice} <span class="dim">${Number(r.speed || 1).toFixed(2)}×</span></td>
         <td>${rendChip(r)}</td>
         <td><div class="bar ${r.status === 'running' ? 'run' : ''}"><i style="width:${pct(genProg(r))}%"></i></div>
-          <div class="dim small">${r.done_chapters ?? 0}/${r.total_chapters ?? '?'} chapters · ${pct(genProg(r))}%</div></td>
+          <div class="dim small">${r.done_chapters ?? 0}/${r.total_chapters ?? '?'} chapters · ${pct(genProg(r))}%${r.live && r.live.eta_seconds != null ? ` · ~${fmtEta(r.live.eta_seconds)} left` : ''}</div></td>
         <td>${qActions(r)}</td></tr>`)}</tbody></table></div>
       <div class="q-cards">${q.map((r) => html`<div class="q-card">
         <div class="row between"><a href="#/book/${r.book_id}" class="grow" style="font-weight:600">${r.book_title || `Book ${r.book_id}`}</a>${rendChip(r)}</div>

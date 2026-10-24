@@ -110,10 +110,47 @@ def has_m4b(r: Rendition) -> bool:
     return bool(r.m4b_path) and Path(r.m4b_path).exists()
 
 
+CHARS_PER_AUDIO_SECOND = 16.0  # measured on Kokoro af_heart at 1.0x
+
+
+def live_generation(r: Rendition) -> tuple[float, dict | None]:
+    """Fine-grained generation fraction (0..1) and the worker's live status for this rendition.
+
+    ``r.progress`` only advances when a whole chapter finishes; single-chapter books would sit
+    at 0% for the entire job. Blend in the current chapter's chunk progress from the worker.
+    """
+    from ..worker import worker  # local import: keeps routers importable without the worker thread
+
+    frac = float(r.progress or 0.0)
+    st = worker.status
+    if st.rendition_id != r.id or r.status != "running":
+        return frac, None
+    chapters = list(r.chapters)
+    narrated = [c for c in chapters if c.status != "skipped"]
+    n = len(narrated)
+    chunk_frac = (st.chunk / st.chunks) if st.chunks else 0.0
+    if n:
+        frac = min(1.0, (sum(1 for c in narrated if c.status == "done") + chunk_frac) / n)
+    rtf = round(st.audio_seconds / st.wall_seconds, 2) if st.wall_seconds > 1 else None
+    total_chars = sum(c.char_count or 0 for c in narrated)
+    eta = None
+    if total_chars:
+        remaining_audio = total_chars * (1.0 - frac) / CHARS_PER_AUDIO_SECOND
+        eta = round(remaining_audio / max(rtf or 4.0, 0.5))
+    live = {
+        "chapter_index": st.chapter_index, "chapter_title": st.chapter_title,
+        "chunk": st.chunk, "chunks": st.chunks, "chapter_fraction": round(chunk_frac, 4),
+        "realtime_factor": rtf, "eta_seconds": eta,
+    }
+    return frac, live
+
+
 def rendition_dict(r: Rendition) -> dict:
+    frac, live = live_generation(r)
     return {
         "id": r.id, "book_id": r.book_id, "voice": r.voice, "voice_name": describe_voice(r.voice)["name"],
         "speed": r.speed, "engine": r.engine, "status": r.status, "progress": round(r.progress or 0.0, 4),
+        "generation_progress": round(frac, 4), "live": live,
         "done_chapters": r.done_chapters, "total_chapters": r.total_chapters,
         "total_duration": round(r.total_duration or 0.0, 3), "error": r.error,
         "created_at": iso(r.created_at), "finished_at": iso(r.finished_at), "has_m4b": has_m4b(r),
@@ -204,7 +241,6 @@ def rendition_full(db: Session, r: Rendition, user: User, progress_by_rid: dict[
     """
     d = rendition_dict(r)
     p = progress_by_rid.get(r.id)
-    d["generation_progress"] = d["progress"]
     d["chapters"] = [chapter_dict(c) for c in r.chapters]
     d["progress"] = progress_dict(r, p) if p is not None else None
     d["bookmarks"] = [bookmark_dict(b) for b in user_bookmarks(db, user, r.id)]
