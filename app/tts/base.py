@@ -20,6 +20,13 @@ class TTSEngine(ABC):
     def ready(self) -> tuple[bool, str]:
         return True, "ok"
 
+    def warmup(self) -> None:
+        """Load models / open connections so the first real chunk doesn't pay for it."""
+
+    def has_voice(self, voice: str) -> bool | None:
+        """True/False when the engine knows its voice list, None when it can't tell."""
+        return None
+
 
 VOICE_META = {
     "a": ("American English", "en-us"), "b": ("British English", "en-gb"), "e": ("Spanish", "es"),

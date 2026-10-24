@@ -21,7 +21,8 @@ from urllib.parse import unquote
 
 import warnings
 
-from bs4 import BeautifulSoup, NavigableString, Tag, XMLParsedAsHTMLWarning
+from bs4 import (BeautifulSoup, CData, Comment, Declaration, Doctype, NavigableString, ProcessingInstruction,
+                 Tag, XMLParsedAsHTMLWarning)
 
 warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
 
@@ -35,6 +36,7 @@ BLOCK_TAGS = {
     "center", "address", "figure", "details", "summary", "html",
 }
 SKIP_TAGS = {"script", "style", "head", "title", "svg", "img", "image", "video", "audio", "math", "sup"}
+_NON_TEXT = (Comment, CData, Declaration, Doctype, ProcessingInstruction)
 HEADING_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
 
 GUTENBERG_START_RE = re.compile(
@@ -119,9 +121,12 @@ class BookText:
 # OPF / container parsing
 # ---------------------------------------------------------------------------
 def _read_opf(z: zipfile.ZipFile) -> tuple[str, BeautifulSoup]:
-    container = BeautifulSoup(z.read("META-INF/container.xml"), "xml")
-    rootfile = container.find("rootfile")
-    if rootfile is None or not rootfile.get("full-path"):
+    names = set(z.namelist())
+    rootfile = None
+    if "META-INF/container.xml" in names:
+        container = BeautifulSoup(z.read("META-INF/container.xml"), "xml")
+        rootfile = container.find("rootfile")
+    if rootfile is None or not rootfile.get("full-path") or rootfile["full-path"] not in names:
         # Fallback: first .opf in the archive
         for n in z.namelist():
             if n.lower().endswith(".opf"):
@@ -129,6 +134,53 @@ def _read_opf(z: zipfile.ZipFile) -> tuple[str, BeautifulSoup]:
         raise ValueError("EPUB has no OPF package document")
     opf_path = rootfile["full-path"]
     return opf_path, BeautifulSoup(z.read(opf_path), "xml")
+
+
+def _opf_metadata(opf: BeautifulSoup) -> dict:
+    """Title, authors, language, description and Gutenberg id from an OPF document."""
+    title = _text_of(opf.find("dc:title")) or _text_of(opf.find("title"))
+    creators = opf.find_all("dc:creator") or opf.find_all("creator")
+    # EPUB3 puts roles in <meta refines="#id" property="role">aut</meta>; EPUB2 in opf:role.
+    refined_roles = {}
+    for m in opf.find_all("meta"):
+        if (m.get("property") or "") == "role" and (m.get("refines") or "").startswith("#"):
+            refined_roles[m["refines"][1:]] = _text_of(m).lower()
+    authors: list[str] = []
+    others: list[str] = []
+    for c in creators:
+        name = _text_of(c)
+        if not name:
+            continue
+        role = (c.get("opf:role") or c.get("role") or refined_roles.get(c.get("id") or "", "")).lower()
+        (authors if role in ("", "aut") else others).append(name)
+    authors = list(dict.fromkeys(authors or others))
+    language = _text_of(opf.find("dc:language")) or _text_of(opf.find("language")) or "en"
+    desc_el = opf.find("dc:description") or opf.find("description")
+    description = ""
+    if desc_el is not None:
+        raw = desc_el.get_text(" ", strip=True)
+        description = _collapse_ws(_html_soup(raw).get_text(" ")) if "<" in raw else _collapse_ws(raw)
+    ident_text = " ".join(_text_of(e) for e in opf.find_all(["dc:identifier", "identifier", "dc:source", "source"]))
+    gid_match = GUTENBERG_ID_RE.search(ident_text)
+    return {
+        "title": title, "authors": authors, "language": language, "description": description,
+        "gutenberg_id": gid_match.group(1) if gid_match else None,
+        "is_gutenberg": bool(gid_match) or "gutenberg" in ident_text.lower(),
+    }
+
+
+def read_epub_metadata(path: str) -> dict:
+    """Cheap metadata read: parses only META-INF/container.xml and the OPF package document.
+
+    Returns ``{"title", "authors", "language", "description", "gutenberg_id", "is_gutenberg"}``.
+    Raises ``zipfile.BadZipFile`` / ``ValueError`` / ``OSError`` for unreadable files.
+    """
+    with zipfile.ZipFile(path) as z:
+        _opf_path, opf = _read_opf(z)
+    meta = _opf_metadata(opf)
+    if not meta["title"]:
+        meta["title"] = posixpath.splitext(posixpath.basename(str(path)))[0]
+    return meta
 
 
 def _resolve(base_dir: str, href: str) -> str:
@@ -144,7 +196,7 @@ def _text_of(el: Tag | None) -> str:
 # TOC parsing (EPUB3 nav or NCX), flattened in document order
 # ---------------------------------------------------------------------------
 def _parse_nav(data: bytes, nav_dir: str) -> list[tuple[str, str, str | None]]:
-    soup = BeautifulSoup(data, "lxml")
+    soup = _html_soup(data)
     nav = None
     for n in soup.find_all("nav"):
         if (n.get("epub:type") or "").strip() == "toc":
@@ -198,34 +250,37 @@ class _BlockCollector:
                                  link_chars=link_chars, is_heading=tag in HEADING_TAGS, pre=pre))
 
     @staticmethod
-    def _inline_text(nodes: list) -> tuple[str, set[str], int]:
+    def _inline_text(nodes: list, pre: bool = False) -> tuple[str, set[str], int]:
+        """Render inline content. Outside <pre>, source line breaks are plain whitespace
+        (Gutenberg hard-wraps its HTML at ~72 columns); only <br> starts a new line."""
         parts: list[str] = []
         ids: set[str] = set()
         link_chars = 0
-        for n in nodes:
+
+        def visit(n, in_link: bool) -> None:
+            nonlocal link_chars
             if isinstance(n, NavigableString):
-                if n.parent is not None and n.parent.name in SKIP_TAGS:
-                    continue
-                parts.append(str(n))
+                if isinstance(n, _NON_TEXT) or (n.parent is not None and n.parent.name in SKIP_TAGS):
+                    return
+                t = str(n)
+                if not pre:
+                    t = t.replace("\r", " ").replace("\n", " ")
+                parts.append(t)
+                if in_link:
+                    link_chars += len(t.strip())
             elif isinstance(n, Tag):
                 if n.name in SKIP_TAGS:
-                    continue
+                    return
                 if n.get("id"):
                     ids.add(n["id"])
-                for d in n.find_all(True):
-                    if d.get("id"):
-                        ids.add(d["id"])
-                for s in n.find_all(SKIP_TAGS):
-                    s.decompose()
                 if n.name == "br":
                     parts.append("\n")
-                    continue
-                t = n.get_text(" ")
-                parts.append(t)
-                if n.name == "a":
-                    link_chars += len(t.strip())
-                else:
-                    link_chars += sum(len(a.get_text(" ").strip()) for a in n.find_all("a"))
+                    return
+                for c in n.children:
+                    visit(c, in_link or n.name == "a")
+
+        for n in nodes:
+            visit(n, False)
         return "".join(parts), ids, link_chars
 
     def walk(self, el: Tag) -> None:
@@ -238,7 +293,7 @@ class _BlockCollector:
         if not has_block_child:
             # Leaf block: everything inside is inline.
             pre = el.name == "pre"
-            text, ids, link_chars = self._inline_text(children)
+            text, ids, link_chars = self._inline_text(children, pre)
             if pre:
                 # Keep line structure in <pre>; each line becomes part of the block.
                 text = "\n".join(l.rstrip() for l in text.splitlines() if l.strip())
@@ -260,7 +315,7 @@ class _BlockCollector:
 
 
 def _blocks_from_xhtml(data: bytes, file_index: int) -> list[Block]:
-    soup = BeautifulSoup(data, "lxml")
+    soup = _html_soup(data)
     body = soup.find("body") or soup
     col = _BlockCollector(file_index)
     col.walk(body)
@@ -272,6 +327,13 @@ def _blocks_from_xhtml(data: bytes, file_index: int) -> list[Block]:
 # ---------------------------------------------------------------------------
 _WS_RE = re.compile(r"[ \t\r\f\v ]+")
 _NL_RE = re.compile(r"\s*\n\s*")
+
+
+def _html_soup(data: bytes | str) -> BeautifulSoup:
+    """Parse (X)HTML leniently with lxml, without the XML-as-HTML warning."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", XMLParsedAsHTMLWarning)
+        return BeautifulSoup(data, "lxml")
 
 
 def _collapse_ws(s: str) -> str:
@@ -303,37 +365,74 @@ def roman_to_int(s: str) -> int | None:
     return total
 
 
+def int_to_roman(n: int) -> str:
+    out = []
+    for v, sym in ((1000, "M"), (900, "CM"), (500, "D"), (400, "CD"), (100, "C"), (90, "XC"), (50, "L"),
+                   (40, "XL"), (10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (1, "I")):
+        while n >= v:
+            out.append(sym)
+            n -= v
+    return "".join(out)
+
+
+def is_roman(s: str) -> bool:
+    """True only for canonical numerals ("XIV"), so words like "DID" or "CIVIL" don't count."""
+    n = roman_to_int(s)
+    return bool(n) and 0 < n < 4000 and int_to_roman(n) == s.upper()
+
+
+_SMALL_WORDS = {"a", "an", "and", "as", "at", "but", "by", "for", "in", "of", "on", "or", "the", "to", "nor",
+                "from", "with", "into", "upon", "via", "vs"}
+_EDGE_PUNCT = ".,;:!?()[]{}\"'“”‘’«»—–-"
+
+
 def smart_title(s: str) -> str:
     """Turn ALL-CAPS headings into Title Case (keeps roman numerals and initials)."""
     letters = [c for c in s if c.isalpha()]
     if not letters or not all(c.isupper() for c in letters):
         return s
-    small = {"a", "an", "and", "as", "at", "but", "by", "for", "in", "of", "on", "or", "the", "to", "nor"}
 
     def fix(word: str, first: bool) -> str:
-        if _ROMAN_ONLY_RE.match(word) and len(word.strip(".")) > 1:
+        bare = word.strip(_EDGE_PUNCT)
+        if len(bare) > 1 and is_roman(bare):
             return word
         core = word.lower()
-        if re.fullmatch(r"[a-z]\.", core):
-            return core.upper()  # an initial, e.g. "A." in "Edgar A. Poe"
-        if not first and core.strip(".,;:") in small:
+        if re.fullmatch(r"(?:[^\w]*)(?:[a-z]\.)+(?:[^\w]*)", core):
+            return core.upper()  # initials, e.g. "A." in "Edgar A. Poe", "U.S."
+        if not first and bare.lower() in _SMALL_WORDS:
             return core
-        return re.sub(r"(^|[-'’])([a-z])", lambda m: m.group(1) + m.group(2).upper(), core)
+        core = re.sub(r"[^\W\d_]", lambda m: m.group(0).upper(), core, count=1)       # first letter
+        core = re.sub(r"([-—–/])([^\W\d_])", lambda m: m.group(1) + m.group(2).upper(), core)  # Wine-Shop
+        core = re.sub(r"^([^\w]*[OD]['’])([a-z])", lambda m: m.group(1) + m.group(2).upper(), core)  # O'Brien
+        return core
 
     words = s.split(" ")
-    return " ".join(fix(w, i == 0) for i, w in enumerate(words))
+    out = []
+    for i, w in enumerate(words):
+        prev = out[-1] if out else ""
+        # A word after "III." / a colon / a dash starts a new phrase, so it is capitalised too.
+        out.append(fix(w, i == 0 or prev.endswith((":", "—", "–", ".", "!", "?")) or prev in ("—", "–", "-")))
+    return " ".join(out)
 
 
 _FOOTNOTE_RE = re.compile(r"\s*(\[\s*\d+\s*\]|\(\*\d+\)|\{\d+\})")
 _BYLINE_RE = re.compile(r"^\s*by\b", re.I)
 
 
+def _roman_heading_sub(m: re.Match) -> str:
+    num = m.group(2)
+    if not num.isupper() or not is_roman(num):
+        return m.group(0)
+    return f"{m.group(1).capitalize()} {roman_to_int(num)}{m.group(3)}"
+
+
 def heading_for_speech(title: str) -> str:
-    t = smart_title(_FOOTNOTE_RE.sub("", title).strip())
-    t = _ROMAN_RE.sub(lambda m: f"{m.group(1).capitalize()} {roman_to_int(m.group(2))}{m.group(3)}"
-                      if roman_to_int(m.group(2)) else m.group(0), t)
+    """"CHAPTER IV. The Preparation" -> "Chapter 4. The Preparation." ; "II" -> "2."."""
+    t = _collapse_ws(_FOOTNOTE_RE.sub("", title)).replace("\n", " ").strip()
+    t = smart_title(t)
+    t = _ROMAN_RE.sub(_roman_heading_sub, t)
     m = _ROMAN_ONLY_RE.match(t)
-    if m and roman_to_int(m.group(1)):
+    if m and m.group(1).isupper() and is_roman(m.group(1)):
         t = f"{roman_to_int(m.group(1))}."
     t = t.rstrip()
     if t and t[-1] not in ".!?:":
@@ -341,8 +440,16 @@ def heading_for_speech(title: str) -> str:
     return t
 
 
+_TRAILING_ABBREV_RE = re.compile(r"(?:\b[A-Za-z]|\b(?:Mr|Mrs|Ms|Dr|St|Jr|Sr|Co|No|Vol|Esq|Bros|etc))\.$")
+
+
 def display_title(title: str) -> str:
-    t = smart_title(_FOOTNOTE_RE.sub("", title).strip())
+    """Title for menus/chapter lists: footnote markers removed, ALL CAPS -> Title Case,
+    a lone trailing period dropped ("The Black Cat." -> "The Black Cat")."""
+    t = _collapse_ws(_FOOTNOTE_RE.sub("", title)).replace("\n", " ").strip()
+    t = smart_title(t)
+    if t.endswith(".") and not t.endswith("..") and not _TRAILING_ABBREV_RE.search(t):
+        t = t[:-1].rstrip()
     return t or "Untitled"
 
 
@@ -354,13 +461,17 @@ _ATOMIC = {
 
 def clean_for_tts(text: str, language: str = "en") -> str:
     """Normalise a paragraph for the TTS engine."""
-    t = text.replace(" ", " ")
+    t = text.replace(" ", " ").replace("­", "").replace("​", "").replace("﻿", "")
     t = re.sub(r"\[\s*\d+\s*\]|\(\*\d+\)|\{\d+\}", "", t)          # footnote markers
     t = re.sub(r"(?<![A-Za-z0-9])_([^_\n]{1,200}?)_(?![A-Za-z0-9])", r"\1", t)  # _italics_
     t = t.replace("…", "...")
-    t = t.replace("“", '"').replace("”", '"').replace("‘", "'").replace("’", "'")
-    t = re.sub(r"(?<=\w)[—–](?=\w)", ", ", t)
-    t = re.sub(r"[—–]", " ", t)
+    t = t.replace("“", '"').replace("”", '"').replace("„", '"').replace("‘", "'").replace("’", "'")
+    t = t.replace("«", '"').replace("»", '"')
+    t = re.sub(r"(?<=\d)\s*[—–]\s*(?=\d)", " to ", t)              # 1840–1850
+    t = re.sub(r"(?<=\w)[—–―]+(?=\w)", ", ", t)                   # word—word
+    t = re.sub(r"[—–―]+", " ", t)
+    t = re.sub(r"\*+", " ", t)                                     # "* * *" breaks, *emphasis*
+    t = re.sub(r"&c\.", "etc.", t)
     t = re.sub(r"\s*&\s*", " and ", t)
     t = re.sub(r"\.{4,}", "...", t)
     t = re.sub(r",\s*,", ",", t)
@@ -369,49 +480,79 @@ def clean_for_tts(text: str, language: str = "en") -> str:
         t = unicodedata.normalize("NFKD", t)
         t = "".join(ch for ch in t if not unicodedata.combining(ch))
     t = _WS_RE.sub(" ", t)
+    t = re.sub(r" +([,;:!?])", r"\1", t)
+    t = re.sub(r"(^|\n)\s*[,;:]\s*", r"\1", t)                     # no leading comma after a removed dash
     t = re.sub(r"\s*\n\s*", "\n", t).strip()
     return t
 
 
-_SENT_RE = re.compile(r"([.!?][\"'\)\]]?)\s+(?=[\"'(\[A-Z0-9])")
+_SENT_RE = re.compile(r"([.!?…][\"'”’\)\]]*)\s+(?=[\"'“‘(\[A-Z0-9])")
+_ABBREV_END_RE = re.compile(
+    r"(?:\b(?:Mr|Mrs|Ms|Messrs|Mme|Mlle|Mons|Dr|St|Rev|Col|Gen|Capt|Lt|Sgt|Prof|Hon|Jr|Sr|Bros|Gov|Sen|"
+    r"Rep|Fr|vs|viz|cf|No|Nos|Vol|Ch|pp|Esq)|(?<![A-Za-z])[A-Z])\.$"
+)
 
 
 def split_sentences(line: str) -> list[str]:
-    return [s for s in _SENT_RE.sub(r"\1\n", line).split("\n") if s.strip()]
+    """Split a line into sentences, not breaking after "Mr." or initials like "A."."""
+    out: list[str] = []
+    start = 0
+    for m in _SENT_RE.finditer(line):
+        head = line[start:m.end(1)]
+        if _ABBREV_END_RE.search(head):
+            continue
+        if head.strip():
+            out.append(head.strip())
+        start = m.end()
+    tail = line[start:].strip()
+    if tail:
+        out.append(tail)
+    return out
+
+
+def _hard_split(s: str, max_chars: int) -> list[str]:
+    """Split one overlong sentence at clause breaks, else at word boundaries; never > max_chars."""
+    pieces: list[str] = []
+    while len(s) > max_chars:
+        window = s[:max_chars + 1]          # a space right at max_chars is a fine cut point
+        cut = -1
+        for sep in (", ", "; ", ": ", " - ", ") "):
+            i = window.rfind(sep)
+            if i >= max_chars // 2:
+                cut = max(cut, i + 1)       # keep the punctuation with the left piece
+        if cut <= 0:
+            i = window.rfind(" ")
+            cut = i if i > 0 else max_chars  # no space at all: a hard cut is unavoidable
+        piece = s[:cut].strip()
+        if piece:
+            pieces.append(piece)
+        s = s[cut:].strip()
+    if s:
+        pieces.append(s)
+    return pieces
 
 
 def chunk_for_tts(paragraphs: list[str], max_chars: int = 380) -> list[str]:
-    """Pack sentences into chunks of at most ``max_chars`` (paragraph boundaries are kept)."""
+    """Pack sentences into chunks of at most ``max_chars``.
+
+    A chunk never spans two paragraphs (or two ``\n``-separated lines, e.g. verse),
+    and sentences are only split - at a clause or word boundary - when they are
+    longer than ``max_chars`` on their own.
+    """
     chunks: list[str] = []
     for para in paragraphs:
         for line in para.split("\n"):
             line = line.strip()
             if not line:
                 continue
-            sentences = split_sentences(line)
             cur = ""
-            for s in sentences:
-                s = s.strip()
-                if not s:
-                    continue
-                while len(s) > max_chars:
-                    # Hard split an overlong sentence at the last clause break before the limit.
-                    cut = max(s.rfind(", ", 0, max_chars), s.rfind("; ", 0, max_chars),
-                              s.rfind(": ", 0, max_chars), s.rfind(" ", 0, max_chars))
-                    if cut < max_chars // 3:
-                        cut = max_chars
-                    if cur:
+            for sent in split_sentences(line):
+                for s in _hard_split(sent.strip(), max_chars):
+                    if cur and len(cur) + 1 + len(s) > max_chars:
                         chunks.append(cur)
-                        cur = ""
-                    chunks.append(s[:cut + 1].strip())
-                    s = s[cut + 1:].strip()
-                if not s:
-                    continue
-                if cur and len(cur) + 1 + len(s) > max_chars:
-                    chunks.append(cur)
-                    cur = s
-                else:
-                    cur = f"{cur} {s}".strip()
+                        cur = s
+                    else:
+                        cur = f"{cur} {s}".strip()
             if cur:
                 chunks.append(cur)
     return chunks
@@ -427,14 +568,12 @@ def extract_book(path: str) -> BookText:
         names = set(z.namelist())
 
         # Metadata
-        title = _text_of(opf.find("dc:title")) or _text_of(opf.find("title")) or posixpath.basename(path)
-        authors = [_text_of(c) for c in opf.find_all("dc:creator")] or [_text_of(c) for c in opf.find_all("creator")]
-        authors = [a for a in authors if a]
-        language = _text_of(opf.find("dc:language")) or _text_of(opf.find("language")) or "en"
-        ident_text = " ".join(_text_of(e) for e in opf.find_all(["dc:identifier", "identifier", "dc:source", "source"]))
-        gid_match = GUTENBERG_ID_RE.search(ident_text)
-        gutenberg_id = gid_match.group(1) if gid_match else None
-        is_gutenberg = bool(gid_match) or "gutenberg" in ident_text.lower()
+        meta = _opf_metadata(opf)
+        title = meta["title"] or posixpath.basename(str(path))
+        authors = meta["authors"]
+        language = meta["language"]
+        gutenberg_id = meta["gutenberg_id"]
+        is_gutenberg = meta["is_gutenberg"]
 
         # Manifest + spine
         manifest: dict[str, tuple[str, str, str]] = {}

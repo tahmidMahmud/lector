@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Lector</title>
+<meta name="description" content="Lector — your library, narrated.">
+<meta name="theme-color" content="#14161c">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Lector">
+<link rel="icon" href="/static/icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/static/icons/icon.svg">
+<link rel="manifest" href="/manifest.webmanifest">
+<script>
+  // Apply the cached theme before first paint to avoid a flash.
+  (function () {
+    var t = 'dark';
+    try { t = localStorage.getItem('lector.theme') || 'dark'; } catch (e) {}
+    if (t === 'auto') document.documentElement.removeAttribute('data-theme');
+    else document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<a class="skip-link" href="#view">Skip to content</a>
+<header class="topbar" id="topbar" hidden>
+  <a class="brand" href="#/" aria-label="Lector library">
+    <img src="/static/icons/icon.svg" alt="" width="28" height="28">
+    <span>Lector</span>
+  </a>
+  <nav class="nav" id="nav" aria-label="Main"></nav>
+</header>
+<main id="view" tabindex="-1"></main>
+<div class="mini" id="mini" hidden></div>
+<div class="toasts" id="toasts" role="status" aria-live="polite"></div>
+<dialog class="modal" id="modal"></dialog>
+<audio id="audio" preload="metadata"></audio>
+<noscript><p style="padding:2rem">Lector needs JavaScript.</p></noscript>
+<script type="module" src="/static/app.js"></script>
+</body>
+</html>

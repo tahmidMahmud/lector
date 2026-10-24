@@ -1,0 +1,41 @@
+# Lector - audiobooks narrated from your Kavita library.
+#   cp .env.example .env   # then set KAVITA_API_KEY (and check the paths)
+#   docker compose up -d --build
+#   open http://<host>:5055 and create the admin account
+services:
+  lector:
+    build: .
+    image: lector:local
+    container_name: lector
+    env_file: .env
+    environment:
+      # Container-side paths are fixed by the volume layout below; host paths live in .env.
+      - LECTOR_DATA_DIR=/data
+      - KOKORO_MODEL=/models/kokoro-v1.0.onnx
+      - KOKORO_VOICES=/models/voices-v1.0.bin
+    ports:
+      - ${LECTOR_PORT:-5055}:5000
+    volumes:
+      # DB, secret key, covers, generated chapter audio and M4B exports. Put this on a big disk.
+      - ${LECTOR_DATA_PATH:?set LECTOR_DATA_PATH in .env}:/data
+      # The same host folder Kavita mounts at /books (read-only is enough).
+      - ${BOOKS_PATH:?set BOOKS_PATH in .env}:/books:ro
+      # Kokoro model files. Must be writable if they are not there yet (auto-download, ~350 MB).
+      - ${KOKORO_MODELS_PATH:?set KOKORO_MODELS_PATH in .env}:/models
+    networks:
+      - media-server_default
+    restart: unless-stopped
+    # TTS deliberately uses every CPU core the container can see. To leave headroom for other
+    # services, cap it here (and/or set TTS_THREADS in .env):
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: "6"
+    #       memory: 3G
+
+networks:
+  # The network created by the media-server compose project; Kavita is reachable on it as
+  # http://kavita:5000. If Kavita is not on this network, remove this block and the
+  # "networks:" entry above, and set KAVITA_URL=http://host.docker.internal:5050 in .env.
+  media-server_default:
+    external: true
