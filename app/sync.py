@@ -103,6 +103,9 @@ def _sync_series(kv: KavitaClient, lib: dict, series: dict, force_covers: bool, 
     """Upsert the Book rows of one series. Returns the chapter ids seen."""
     sid = series["id"]
     name = (series.get("name") or series.get("originalName") or f"Series {sid}").strip()
+    # Kavita derives multi-volume series names from the EPUB title, which can leave a dangling
+    # separator ("The Works of Edgar Allan Poe —"); drop it so titles don't read "... — — Volume 1".
+    name = name.rstrip(" \u2014\u2013-:|,").strip() or name
     volumes = kv.volumes(sid)
     entries = [e for e in file_entries(volumes, name) if e.get("file_path") and e.get("chapter_id") is not None]
     if not entries:

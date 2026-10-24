@@ -1459,9 +1459,13 @@ async function viewBook(root, ctx, [bookId]) {
   ctx.every(5000, () => {
     tick++;
     if (document.hidden) return;
-    const active = (b.renditions || []).some(isActive);
-    if (fastPoll) { refresh(); if ((b.renditions || []).every((r) => r.has_m4b || r.status !== 'done')) fastPoll = false; return; }
-    if (active && tick % 3 === 0) refresh();
+    const rs = b.renditions || [];
+    const running = rs.some((r) => r.status === 'running');
+    const active = rs.some(isActive);
+    if (fastPoll) { refresh(); if (rs.every((r) => r.has_m4b || r.status !== 'done')) fastPoll = false; return; }
+    // A running narration updates its live segment counter every few seconds; queued/paused ones only need
+    // an occasional check.
+    if (running || (active && tick % 3 === 0)) refresh();
   });
 }
 
