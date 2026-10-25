@@ -147,8 +147,8 @@ folder. The suite has 187 tests and runs in about 11 s with everything available
 
 Optional resources, and the tests skip (not fail) without them:
 
-- **Real books:** `LECTOR_TEST_BOOKS` (default `tests/fixtures/books`,
-  the author's Kavita folder) searched recursively for `*.epub`. The specific-book tests look
+- **Real books:** `LECTOR_TEST_BOOKS` (default `tests/fixtures/books`; point it at your
+  Kavita books folder) searched recursively for `*.epub`. The specific-book tests look
   for *The Gift of the Magi*, *A Tale of Two Cities* and *The Works of Edgar Allan Poe -
   Volume 1* (all Project Gutenberg) and skip individually if a title is absent. Every book in
   the folder must be a Gutenberg EPUB with both markers, since the parametrized tests assert
