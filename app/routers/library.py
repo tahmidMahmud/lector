@@ -173,8 +173,7 @@ def rendition(rid: int, user: User = Depends(current_user), db: Session = Depend
     b = db.scalars(select(Book).options(*BOOK_LOAD_OPTIONS).where(Book.id == r.book_id)).one()
     progress_by_rid = user_progress_map(db, user, [x.id for x in b.renditions])
     p: Progress | None = progress_by_rid.get(rid)
-    d = rendition_dict(r)
-    d["generation_progress"] = d["progress"]
+    d = rendition_dict(r)  # already carries generation_progress + live
     d.update({
         "book": book_summary(b, progress_by_rid),
         "chapters": [chapter_dict(c) for c in r.chapters],

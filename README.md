@@ -8,6 +8,19 @@ player. Nothing leaves your machine.
 
 Stack: Python 3.12, FastAPI, SQLite, kokoro-onnx / onnxruntime, ffmpeg.
 
+## Documentation
+
+| Guide | What it covers |
+|---|---|
+| [User guide](docs/USER-GUIDE.md) | Library, book page, generating narrations, the player, shortcuts, settings, admin page |
+| [Deployment](docs/DEPLOYMENT.md) | Requirements, Kavita API key and a low-privilege Kavita user, compose, reverse proxy and HTTPS, backups, updating |
+| [Configuration](docs/CONFIGURATION.md) | Every environment variable and runtime setting, path mapping, audio formats, external TTS |
+| [Troubleshooting](docs/TROUBLESHOOTING.md) | Symptom, cause and fix for sync, narration, playback and permission problems |
+| [FAQ](docs/FAQ.md) | Formats, languages, voices, GPU, storage, legal notes |
+| [Architecture](docs/ARCHITECTURE.md) | How it works inside: data model, Kavita sync, EPUB pipeline, worker, TTS engines, HTTP layer, front end |
+| [Development](docs/DEVELOPMENT.md) | Local setup, tests, debugging CLI, adding endpoints and engines |
+| [API reference](docs/API.md) | Every HTTP endpoint and JSON object |
+
 ## Features
 
 - **Multi-user.** The first account becomes the admin; admins create other users (or turn on
@@ -110,14 +123,14 @@ in `.env`. On Linux hosts also add `extra_hosts: ["host.docker.internal:host-gat
 - Nothing is narrated automatically. Open a book, pick a voice and speed, and start a narration
   (admins, or any user when "allow user requests" is on). Jobs are queued and processed one at
   a time; chapters become playable as soon as each one is finished.
-- The first narration loads the Kokoro model (and downloads it if `/models` is empty), which
-  takes a few seconds (or a few minutes for the download).
+- The Kokoro model is loaded (and downloaded if `/models` is empty) when the container starts,
+  so the first narration begins immediately; the download itself can take a few minutes.
 
 ### How long does it take?
 
-Kokoro on CPU runs at roughly **2-3x realtime** on an Apple M4 (all cores): one hour of audio
-takes 20-30 minutes to generate, so a 15-hour novel takes about **5-7 hours** (a quick benchmark
-inside Docker Desktop with 10 CPUs measured about 2.2x). Speed scales with the
+Kokoro on CPU runs at roughly **5x realtime** on an Apple M4 inside Docker with `TTS_THREADS=8`
+(about 2.2x with the default thread count on Docker Desktop): one hour of audio takes about
+12 minutes to generate, so a 15-hour novel takes about **3 hours**. Speed scales with the
 CPU cores Docker can use (Docker Desktop -> Settings -> Resources). The admin page shows the
 live realtime factor. For much faster generation, run Kokoro-FastAPI on a GPU machine and set
 `TTS_ENGINE=openai`.
@@ -237,7 +250,7 @@ or simply stop the container (`docker compose stop`) and copy the folder.
 ```sh
 python3.12 -m venv .venv
 . .venv/bin/activate
-pip install -r requirements.txt pytest
+pip install -r requirements-dev.txt
 brew install ffmpeg            # or apt-get install ffmpeg
 
 export LECTOR_DATA_DIR=./data KOKORO_MODEL=./models/kokoro-v1.0.onnx KOKORO_VOICES=./models/voices-v1.0.bin
@@ -253,4 +266,4 @@ Build the image alone with `docker build -t lector:local .`.
 ## API
 
 The JSON API (auth, library, renditions, progress, bookmarks, admin) is documented in
-[`docs/API.md`](docs/API.md). FastAPI's interactive docs are normally available at `/docs` on a running server.
+[`docs/API.md`](docs/API.md). FastAPI's interactive docs are available at `/api/docs` on a running server.

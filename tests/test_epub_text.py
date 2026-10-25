@@ -17,7 +17,7 @@ from app.epub_text import (  # noqa: E402
     smart_title, split_sentences,
 )
 
-BOOKS_DIR = Path(os.environ.get("LECTOR_TEST_BOOKS", "/Volumes/mediaDrive/media-server/downloads/media/books"))
+BOOKS_DIR = Path(os.environ.get("LECTOR_TEST_BOOKS", "tests/fixtures/books"))  # real-book tests skip when absent
 BOOKS = sorted(BOOKS_DIR.glob("**/*.epub")) if BOOKS_DIR.is_dir() else []
 needs_books = pytest.mark.skipif(not BOOKS, reason=f"sample EPUB folder {BOOKS_DIR} not available")
 

@@ -15,7 +15,7 @@ import pytest  # noqa: E402
 from app.tts.base import VOICE_META, TTSEngine, describe_voice  # noqa: E402
 from app.tts.kokoro_engine import SUPPORTED_LANGS, KokoroEngine  # noqa: E402
 
-_DEFAULT_MODELS = Path.home() / ".claude/skills/metaphor-art-reel/.kokoro-models"
+_DEFAULT_MODELS = Path(os.environ.get("KOKORO_MODELS_DIR", "models"))  # tests skip when the files are absent
 MODEL = Path(os.environ.get("KOKORO_MODEL") or _DEFAULT_MODELS / "kokoro-v1.0.onnx")
 VOICES = Path(os.environ.get("KOKORO_VOICES") or _DEFAULT_MODELS / "voices-v1.0.bin")
 needs_model = pytest.mark.skipif(not (MODEL.exists() and VOICES.exists()),

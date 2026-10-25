@@ -15,7 +15,10 @@ User          {id, username, is_admin, created_at, playback_rate, skip_back_seco
 Voice         {id, name, language, gender}                               // e.g. {id:"af_heart", name:"Heart", language:"American English", gender:"female"}
 Rendition     {id, book_id, voice, voice_name, speed, engine,
                status,            // "queued"|"running"|"paused"|"done"|"error"|"cancelled"
-               progress,          // 0..1 of narrated chapters done
+               progress,          // 0..1 of narrated chapters done (advances per finished chapter)
+               generation_progress, // 0..1 blended with the running chapter's segment position
+               live,              // null, or while running: {chapter_index, chapter_title, chunk, chunks,
+                                  //   chapter_fraction, realtime_factor, eta_seconds}
                done_chapters, total_chapters, total_duration /*sec*/, error, created_at,
                finished_at, has_m4b}
 Chapter       {index, title, status /* "pending"|"running"|"done"|"error"|"skipped" */,
@@ -30,7 +33,7 @@ BookDetail    BookSummary + {renditions: [Rendition + {chapters:[Chapter], progr
                bookmarks:[Bookmark]}]}
 ContinueItem  {book: BookSummary, rendition: Rendition, progress: Progress}
 WorkerStatus  {rendition_id, book_title, chapter_index, chapter_title, chunk, chunks,
-               realtime_factor, engine_ready, engine_message}
+               audio_seconds, realtime_factor, engine_ready, engine_message}  // all null when idle
 ```
 
 ## Setup & auth
@@ -45,7 +48,7 @@ WorkerStatus  {rendition_id, book_title, chapter_index, chapter_title, chunk, ch
 | PUT | /api/auth/me | any of `{playback_rate, skip_back_seconds, skip_forward_seconds, preferred_voice, theme}` | User | |
 | PUT | /api/auth/password | `{current_password,new_password}` | `{ok:true}` | |
 
-Username: 2–64 chars `[A-Za-z0-9_.-]`; password ≥ 6 chars.
+Username: 2–64 chars `[A-Za-z0-9_.-]`, case-insensitive; password 6–72 bytes. Validation errors are 422 with `detail` as one string.
 
 ## Library
 | Method | Path | Returns | Notes |
@@ -53,15 +56,15 @@ Username: 2–64 chars `[A-Za-z0-9_.-]`; password ≥ 6 chars.
 | GET | /api/library | `{books:[BookSummary], continue:[ContinueItem]}` | books sorted by sort_title; `continue` = unfinished, most-recent first (max 12) |
 | GET | /api/books/{book_id} | BookDetail | |
 | GET | /api/books/{book_id}/cover | image/jpeg or png | 404 → UI shows placeholder; cacheable |
-| POST | /api/books/{book_id}/renditions | body `{voice, speed?}` → Rendition | requester only. 200 with the existing rendition if (voice,speed) already exists; status set to `queued`; wakes the worker |
+| POST | /api/books/{book_id}/renditions | body `{voice, speed?}` → Rendition | requester only. If (voice,speed) already exists it is returned unchanged, except a `cancelled` one which is re-queued. Speed 0.5–2.0 (defaults to the server default). Wakes the worker |
 | GET | /api/voices | `{voices:[Voice], default_voice, default_speed}` | |
 | GET | /api/voices/{voice}/preview | audio/mpeg | ~8 s sample sentence, generated on first request and cached |
 | GET | /api/renditions/{rid} | Rendition + `{book: BookSummary, chapters, progress, bookmarks}` | |
-| GET | /api/renditions/{rid}/chapters/{index}/audio | audio file | **must support HTTP Range** (206) so seeking works; `Accept-Ranges: bytes`; 404 unless chapter status is `done` |
+| GET/HEAD | /api/renditions/{rid}/chapters/{index}/audio | audio file | supports HTTP Range (206, 416) so seeking works; `Accept-Ranges: bytes`; 404 unless chapter status is `done` |
 | GET | /api/renditions/{rid}/chapters/{index}/timeline | `[{start,end,text,heading}]` | paragraph timings (seconds) for read-along; `[]` if missing |
-| POST | /api/renditions/{rid}/pause \| resume \| cancel \| retry | Rendition | admin. retry re-queues `error`/`cancelled` (keeps finished chapters) |
+| POST | /api/renditions/{rid}/pause \| resume \| cancel \| retry | Rendition | admin. pause: queued/running → paused; resume: paused → queued; cancel: queued/running/paused; retry: error/cancelled → queued (keeps finished chapters). 409 when the action doesn't fit the current status |
 | DELETE | /api/renditions/{rid} | `{ok:true}` | admin; deletes audio files, chapters, progress, bookmarks |
-| POST | /api/renditions/{rid}/m4b | `{status:"building"|"ready"}` | requester; builds a chaptered .m4b in a background thread |
+| POST | /api/renditions/{rid}/m4b | `{status:"building"|"ready"}` | requester; builds a chaptered .m4b from the chapters finished so far in a background thread (409 if none is done; `ready` if the file is newer than every chapter) |
 | GET | /api/renditions/{rid}/m4b | audio/mp4 download | 404 until built |
 
 ## Progress & bookmarks (per signed-in user)
@@ -85,7 +88,7 @@ POST alias exists because sendBeacon can only POST).
 | POST | /api/admin/sync | | `{status:"started"}` or `{status:"busy"}`; runs in a thread |
 | GET | /api/admin/users | | `[User]` |
 | POST | /api/admin/users | `{username,password,is_admin}` | User |
-| PUT | /api/admin/users/{id} | `{password?, is_admin?}` | User (cannot demote the last admin) |
+| PUT | /api/admin/users/{id} | `{password?, is_admin?}` | User (400 when demoting the last admin) |
 | DELETE | /api/admin/users/{id} | | `{ok:true}` (cannot delete yourself) |
 | GET | /api/admin/settings | | `{default_voice, default_speed, allow_user_requests, allow_registration}` |
 | PUT | /api/admin/settings | same keys, any subset | settings |
