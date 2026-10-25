@@ -85,7 +85,7 @@ running Kavita with at least one **Book** library of EPUBs.
      empty writable folder (they are downloaded on first use, ~350 MB).
 2. **Create the data folder** (Docker would otherwise create it as root):
    ```sh
-   mkdir -p /Volumes/mediaDrive/media-server/lector
+   mkdir -p /path/to/lector-data   # whatever you set as LECTOR_DATA_PATH
    ```
 3. **Start.**
    ```sh
